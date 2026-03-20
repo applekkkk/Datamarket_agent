@@ -1,37 +1,16 @@
-from __future__ import annotations
-
-import os
-import re
-import uuid
-from datetime import datetime
-from threading import Lock
-from typing import Any, Dict, List, Optional
-
 from fastapi import BackgroundTasks, FastAPI, HTTPException
-from fastapi.responses import FileResponse
-from langchain.agents import create_agent
-from langchain_community.chat_models import ChatTongyi
-from pydantic import BaseModel, Field
 
-from AgentTools import (
-    AGENT_TOOLS,
-    DATA_AGENT_SYSTEM_PROMPT,
-    add_tier_column,
-    clean_missing_values,
-    convert_currency_column,
-    drop_frame,
-    get_dataset_info,
-    get_preview,
-    load_dataset,
-    save_dataset,
-)
+from service import load_file, Response
 
 app = FastAPI(title="Data Agent Service")
 
+
 @app.post("/agent/process")
-async def process(prompt):
-    return
+async def process(file, user_id, user_prompt):
+    file_path = load_file(file,user_id)
+    report = await process(file_path,user_prompt)
+    return Response(data=report)
 
 @app.post("/download")
-async def download():
+async def download(user_id):
     return
