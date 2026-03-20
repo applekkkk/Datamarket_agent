@@ -1,4 +1,6 @@
-﻿"""
+from __future__ import annotations
+
+"""
 Data Agent Tools — 面向结构化表格数据的处理工具集
 按生命周期阶段组织，配合 DATA_AGENT_SYSTEM_PROMPT 使用
 """
@@ -35,7 +37,7 @@ class FrameRegistry:
         self._frames.pop(frame_id, None)
         self._snapshots.pop(frame_id, None)
 
-    def list(self) -> list[str]:
+    def list_frame_ids(self) -> list[str]:
         return list(self._frames.keys())
 
     def save_snapshot(self, frame_id: str):
@@ -88,7 +90,7 @@ def load_dataset(path: str, encoding: str = "utf-8", sep: str = ",") -> dict:
 def list_frames() -> list[dict]:
     return [
         {"frame_id": fid, "rows": len(_reg.get(fid)), "cols": len(_reg.get(fid).columns)}
-        for fid in _reg.list()
+        for fid in _reg.list_frame_ids()
     ]
 
 
@@ -464,7 +466,7 @@ def export_report(frame_id: str, output_path: str, format: str = "markdown") -> 
 def drop_frame(frame_id: str) -> dict:
     _reg.drop(frame_id)
     _reg.log("drop_frame", {"frame_id": frame_id}, f"释放 {frame_id}")
-    return {"dropped": frame_id, "remaining_frames": _reg.list()}
+    return {"dropped": frame_id, "remaining_frames": _reg.list_frame_ids()}
 
 
 @tool(description=(
@@ -472,8 +474,8 @@ def drop_frame(frame_id: str) -> dict:
     "无参数。返回：{cleared_count}。"
 ))
 def clear_all_frames() -> dict:
-    count = len(_reg.list())
-    for fid in list(_reg.list()):
+    count = len(_reg.list_frame_ids())
+    for fid in list(_reg.list_frame_ids()):
         _reg.drop(fid)
     _reg.clear_log()
     return {"cleared_count": count}
@@ -590,36 +592,57 @@ DATA_AGENT_SYSTEM_PROMPT = """
 3）处理阶段：每次只执行一个明确步骤，禁止一次做多个不透明变换。
 4）校验阶段：每次处理后都要复核行数变化、空值变化和关键字段分布。
 5）保存阶段：处理完成后用 save_dataset 输出结果（可覆盖原文件或保存新文件）。
-6）总结阶段：必须输出一份 Markdown 报告，格式固定如下：
+6）总结阶段：必须输出一份 Markdown 报告，且只允许使用以下结构（不要添加多余章节）：
 
-## 数据处理总结
-### 1. 基本信息
-- frame_id：
-- 输入文件：
-- 输出文件：
-- 处理时间：
+# 数据处理报告
 
-### 2. 执行步骤
-1. 
-2. 
-3. 
+## 一、任务概览
+- 用户目标：
+- 执行时间：
 
-### 3. 结果变化
-- 行数变化：before -> after（减少/增加多少）
-- 列数变化：before -> after
-- 新增列：
-- 删除列：
-- 空值变化：before -> after
+## 二、处理过程（按时间顺序）
+1. **步骤 1：{工具名}**
+   - 操作说明：
+   - 关键参数：
+   - 执行结果：
+2. **步骤 2：{工具名}**
+   - 操作说明：
+   - 关键参数：
+   - 执行结果：
+3. **步骤 N：{工具名}**
+   - 操作说明：
+   - 关键参数：
+   - 执行结果：
 
-### 4. 数据质量评估
-- 完整性：
-- 一致性：
-- 可用性：
-- 风险项：
+## 三、结果对比
+- 行数变化：`before -> after`（变化量：）
+- 列数变化：`before -> after`
+- 新增字段：
+- 删除字段：
+- 空值变化（总量）：
+- 关键字段变化（如金额、类别、时间）：
 
-### 5. 后续建议
-- 
-- 
+## 四、质量评估
+- 完整性评分（0-100）：
+- 一致性评分（0-100）：
+- 可用性评分（0-100）：
+- 主要风险：
+- 风险缓解建议：
+
+## 五、可追溯信息
+- 使用工具链：
+- 操作日志摘要：
+- 可复现说明（如何再次执行）：
+
+## 六、结论与建议
+- 本次处理是否达成目标：是/否（原因）
+- 建议下一步动作 1：
+- 建议下一步动作 2：
+
+输出要求：
+- 所有结论必须基于真实工具返回结果，不得臆造。
+- 数据不充分时，明确写“无法判断”并说明缺失信息。
+- 文风简洁、客观、可执行。
 
 7）清理阶段：任务完成后调用 drop_frame / clear_all_frames 释放内存。
 
