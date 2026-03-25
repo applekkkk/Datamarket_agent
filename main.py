@@ -9,8 +9,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from service import load_file, process as run_process
+from visualize import router
 
 app = FastAPI(title="Data Agent Service")
+app.include_router(router)
 
 # Allow CORS for web/dev tools.
 app.add_middleware(
