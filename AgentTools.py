@@ -9,16 +9,28 @@ import duckdb
 import pandas as pd
 from langchain_core.tools import tool
 
+
 class FrameRegistry:
     def __init__(self) -> None:
         self._frames: dict[str, pd.DataFrame] = {}
         self._sources: dict[str, str] = {}
+        self._source_meta: dict[str, dict[str, int]] = {}
         self._op_log: list[dict[str, Any]] = []
 
-    def put(self, frame_id: str, df: pd.DataFrame, source_path: str | None = None) -> None:
+    def put(
+        self,
+        frame_id: str,
+        df: pd.DataFrame,
+        source_path: str | None = None,
+        source_meta: dict[str, int] | None = None,
+    ) -> None:
         self._frames[frame_id] = df
         if source_path:
             self._sources[frame_id] = source_path
+        if source_meta is not None:
+            self._source_meta[frame_id] = dict(source_meta)
+        elif frame_id not in self._source_meta and source_path:
+            self._source_meta[frame_id] = {"rows": int(df.shape[0]), "cols": int(df.shape[1])}
 
     def get(self, frame_id: str) -> pd.DataFrame:
         if frame_id not in self._frames:
@@ -28,12 +40,19 @@ class FrameRegistry:
     def get_source(self, frame_id: str) -> str:
         return self._sources.get(frame_id, "")
 
+    def get_source_meta(self, frame_id: str) -> dict[str, int]:
+        if frame_id in self._source_meta:
+            return dict(self._source_meta[frame_id])
+        df = self.get(frame_id)
+        return {"rows": int(df.shape[0]), "cols": int(df.shape[1])}
+
     def list_frame_ids(self) -> list[str]:
         return list(self._frames.keys())
 
     def drop(self, frame_id: str) -> None:
         self._frames.pop(frame_id, None)
         self._sources.pop(frame_id, None)
+        self._source_meta.pop(frame_id, None)
 
     def log(self, tool_name: str, params: dict[str, Any], summary: str) -> None:
         self._op_log.append(
@@ -52,6 +71,7 @@ class FrameRegistry:
         n = len(self._frames)
         self._frames.clear()
         self._sources.clear()
+        self._source_meta.clear()
         self._op_log.clear()
         return n
 
@@ -67,7 +87,12 @@ def _safe_frame_id() -> str:
 def load_dataset(path: str, encoding: str = "utf-8", sep: str = ",") -> dict:
     df = pd.read_csv(path, encoding=encoding, sep=sep)
     frame_id = _safe_frame_id()
-    _reg.put(frame_id, df, source_path=path)
+    _reg.put(
+        frame_id,
+        df,
+        source_path=path,
+        source_meta={"rows": int(df.shape[0]), "cols": int(df.shape[1])},
+    )
     _reg.log("load_dataset", {"path": path}, f"loaded {len(df)}x{len(df.columns)}")
     return {
         "frame_id": frame_id,
@@ -127,13 +152,14 @@ def get_preview(frame_id: str, n: int = 10) -> dict:
 @tool(description="用DuckDB执行SQL。SQL中直接用 frame_id 作为表名。")
 def run_sql(frame_id: str, sql: str, output_frame_id: str = "") -> str | dict[str, int | str | list[str]]:
     df = _reg.get(frame_id)
+    source_meta = _reg.get_source_meta(frame_id)
     query = str(sql or "").strip().rstrip(";")
     if not query:
         raise ValueError("SQL is empty")
 
     con = duckdb.connect(database=":memory:")
     try:
-        con.register(frame_id, df)          # ← 表名改成 frame_id，不用 input_table
+        con.register(frame_id, df)  # ← 表名改成 frame_id，不用 input_table
         result_df = con.execute(query).fetchdf()
     except Exception as exc:
         cols = {str(c): str(df[c].dtype) for c in df.columns}
@@ -147,7 +173,7 @@ def run_sql(frame_id: str, sql: str, output_frame_id: str = "") -> str | dict[st
         con.close()
 
     target = (output_frame_id or frame_id).strip() or frame_id
-    _reg.put(target, result_df, source_path=_reg.get_source(frame_id))
+    _reg.put(target, result_df, source_path=_reg.get_source(frame_id), source_meta=source_meta)
     _reg.log("run_sql", {"frame_id": frame_id, "output_frame_id": target, "sql": query},
              f"result {len(result_df)}x{len(result_df.columns)}")
     return {
@@ -156,6 +182,8 @@ def run_sql(frame_id: str, sql: str, output_frame_id: str = "") -> str | dict[st
         "cols": int(result_df.shape[1]),
         "columns": [str(c) for c in result_df.columns],
     }
+
+
 @tool(description="保存frame到文件，支持csv/json/parquet。")
 def save_dataset(frame_id: str, output_path: str, format: str = "csv", index: bool = False) -> dict:
     df = _reg.get(frame_id)
@@ -176,46 +204,79 @@ def save_dataset(frame_id: str, output_path: str, format: str = "csv", index: bo
     return {"output_path": str(out), "format": fmt, "rows": int(df.shape[0]), "cols": int(df.shape[1])}
 
 
-@tool(description="导出Markdown处理报告。")
+@tool(description="导出 Markdown 处理报告。")
 def export_report(frame_id: str, output_path: str, user_goal: str = "") -> dict:
     df = _reg.get(frame_id)
     log = _reg.get_log()
+    source = _reg.get_source_meta(frame_id)  # 新增：原始行列数
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    goal_text = user_goal if user_goal else "未提供"
+    # ── 1. 从 log 统计行变化 ──────────────────────────
+    row_delta = sum(
+        item.get("row_delta", 0) for item in log
+    )
+    src_rows = source.get("rows", "?")
+    cur_rows = int(df.shape[0])
 
+    # ── 2. 字段质量表 ────────────────────────────────
+    col_lines = ["| 字段 | 类型 | 空值率 | 唯一值数 | 备注 |",
+                 "|------|------|--------|----------|------|"]
+    for col in df.columns:
+        dtype = str(df[col].dtype)
+        null_pct = df[col].isna().mean()
+        n_unique = df[col].nunique()
+        note = ""
+        if null_pct > 0.05:
+            note = f"⚠ 空值偏高（{null_pct:.1%}）"
+        elif str(df[col].dtype) in ("object", "category"):
+            sample = "、".join(str(v) for v in df[col].dropna().unique()[:3])
+            note = sample
+        else:
+            note = f"均值 {df[col].mean():.2f}"
+        col_lines.append(
+            f"| `{col}` | `{dtype}` | {null_pct:.1%} | {n_unique} | {note} |"
+        )
+
+    # ── 3. 处理步骤（带前后效果）───────────────────────
+    step_lines = []
+    for i, item in enumerate(log, 1):
+        delta = item.get("row_delta", 0)
+        delta_str = f"（行变化：{'−' if delta < 0 else '+'}{abs(delta)}）" if delta else ""
+        step_lines += [
+            f"### 步骤 {i}：`{item['tool']}` <sub>{item['time']}</sub>",
+            f"- 说明：{item['summary']}{delta_str}",
+            f"- 参数：`{json.dumps(item['params'], ensure_ascii=False)}`",
+            "",
+        ]
+
+    # ── 4. 汇总 ──────────────────────────────────────
+    null_rate = df.isna().mean().mean()
     lines = [
         "# 数据处理报告",
         "",
         "## 一、任务概览",
-        f"- 用户目标：{goal_text}",
+        f"- 用户目标：{user_goal or '未提供'}",
         f"- 执行时间：{datetime.now().isoformat(timespec='seconds')}",
         "",
-        "## 二、处理过程（按时间顺序）",
+        "## 二、数据概况",
+        "",
+        f"| 指标 | 值 |",
+        f"|------|----|",
+        f"| 原始行数 | {src_rows} |",
+        f"| 处理后行数 | {cur_rows}（变化 {cur_rows - src_rows:+d}） |",
+        f"| 列数 | {int(df.shape[1])} |",
+        f"| 执行步骤 | {len(log)} |",
+        f"| 剩余空值率 | {null_rate:.2%} |",
+        "",
+        "## 三、字段质量（处理后）",
+        "",
+        *col_lines,
     ]
 
-    if log:
-        for i, item in enumerate(log, 1):
-            lines.append(f"{i}. **{item['tool']}** ({item['time']})")
-            lines.append(f"   - 说明：{item['summary']}")
-            lines.append(f"   - 参数：`{json.dumps(item['params'], ensure_ascii=False)}`")
-    else:
-        lines.append("- 无操作日志")
-
-    lines.extend(
-        [
-            "",
-            "## 三、结果概览",
-            f"- 行数：{int(df.shape[0])}",
-            f"- 列数：{int(df.shape[1])}",
-            f"- 字段：{', '.join([str(c) for c in df.columns])}",
-        ]
-    )
-
     out.write_text("\n".join(lines), encoding="utf-8")
-    _reg.log("export_report", {"frame_id": frame_id, "output_path": str(out)}, "report exported")
-    return {"output_path": str(out), "steps_count": len(log)}
+    _reg.log("export_report", {"output_path": str(out)}, "report exported")
+    return {"output_path": str(out), "steps_count": len(log), "null_rate": round(null_rate, 4)}
 
 
 @tool(description="查看最近N条操作日志。")
@@ -250,7 +311,6 @@ ALL_TOOLS = [
     drop_frame,
     clear_all_frames,
 ]
-
 
 DATA_AGENT_SYSTEM_PROMPT = """
 你是一个面向结构化表格数据的智能处理助手。
