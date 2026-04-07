@@ -257,7 +257,7 @@ def export_report(frame_id: str, output_path: str, user_goal: str = "") -> dict:
         "",
         "## 一、任务概览",
         f"- 用户目标：{user_goal or '未提供'}",
-        f"- 执行时间：{datetime.now().isoformat(timespec='seconds')}",
+        f"- 执行时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "",
         "## 二、数据概况",
         "",

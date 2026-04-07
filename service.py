@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from pathlib import Path
 from shutil import copy2, copyfileobj
 
@@ -125,7 +126,24 @@ def _build_preview(path: Path, n: int = 10):
     return {"columns": [], "rows": []}
 
 
-def process(file_path, user_prompt):
+def _archive_outputs(csv_path: Path, report_path: Path, task_id: str = "") -> tuple[Path, Path]:
+    history_dir = csv_path.parent / "history"
+    history_dir.mkdir(parents=True, exist_ok=True)
+
+    suffix = (task_id or str(int(time.time() * 1000))).strip()
+    base = csv_path.stem
+
+    csv_archive = history_dir / f"{base}_{suffix}.csv"
+    report_archive = history_dir / f"{base}_{suffix}.md"
+
+    copy2(csv_path, csv_archive)
+    if report_path.exists():
+        copy2(report_path, report_archive)
+
+    return csv_archive, report_archive
+
+
+def process(file_path, user_prompt, task_id: str = ""):
     local_path = _resolve_path(file_path)
     if not local_path.exists():
         raise FileNotFoundError(f"文件不存在: {local_path}")
@@ -187,10 +205,16 @@ def process(file_path, user_prompt):
 
     preview = _build_preview(local_path, n=10)
 
+    csv_archive_path, report_archive_path = _archive_outputs(local_path, fixed_report_path, task_id)
+
     return {
         "file_path": str(local_path),
         "report": report,
         "raw": str(result),
         "report_path": str(fixed_report_path),
         "preview": preview,
+        "result_file_path": str(csv_archive_path),
+        "result_file_name": csv_archive_path.name,
+        "report_file_path": str(report_archive_path),
+        "report_file_name": report_archive_path.name,
     }

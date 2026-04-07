@@ -46,7 +46,7 @@ async def _run_async_task(task_id: str, file_path: str, user_prompt: str):
     task["updated_at"] = time.time()
 
     try:
-        result = await run_in_threadpool(run_process, file_path, user_prompt)
+        result = await run_in_threadpool(run_process, file_path, user_prompt, task_id)
         task["status"] = "done"
         task["result"] = result
         task["updated_at"] = time.time()
@@ -106,7 +106,7 @@ async def process(
 ):
     try:
         file_path = load_file(file, user_id)
-        report = await run_in_threadpool(run_process, file_path, user_prompt)
+        report = await run_in_threadpool(run_process, file_path, user_prompt, "")
         return {"code": 200, "message": "success", "data": report}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"处理失败: {exc}") from exc
@@ -121,4 +121,22 @@ async def download(user_id: int = Form(...)):
         path=csv_path,
         media_type="text/csv",
         filename=f"{user_id}.csv",
+    )
+
+
+@app.post("/download/by-name")
+async def download_by_name(file_name: str = Form(...)):
+    safe_name = Path(str(file_name or "")).name
+    if not safe_name.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="invalid file name")
+
+    history_dir = Path(__file__).resolve().parent / "data" / "history"
+    csv_path = history_dir / safe_name
+    if not csv_path.exists():
+        raise HTTPException(status_code=404, detail="file not found")
+
+    return FileResponse(
+        path=csv_path,
+        media_type="text/csv",
+        filename=safe_name,
     )
